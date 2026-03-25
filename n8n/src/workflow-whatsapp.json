@@ -1,0 +1,301 @@
+{
+  "name": "AI Order-to-Cash - WhatsApp",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "whatsapp-webhook",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "wa-verify",
+      "name": "WhatsApp Verify",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [200, 100]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.query['hub.challenge'] }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "wa-verify-resp",
+      "name": "Return Challenge",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [420, 100]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "whatsapp-webhook",
+        "options": {}
+      },
+      "id": "wa-1",
+      "name": "WhatsApp Incoming",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $json.body;\n\n// Validate it's a WhatsApp message event\nconst entry = body?.entry?.[0];\nconst change = entry?.changes?.[0]?.value;\nconst messages = change?.messages;\n\nif (!messages || messages.length === 0) {\n  // Ignore status updates / delivery receipts\n  return [];\n}\n\nconst msg = messages[0];\nif (msg.type !== 'text') {\n  // Only handle text messages for now\n  return [{\n    json: {\n      skip: true,\n      phone_number: msg.from,\n      phone_number_id: change.metadata.phone_number_id,\n      reply: 'Sorry, I only understand text messages. Please type your order, e.g: \"Nipee 2 rice na 3 cooking oil\"'\n    }\n  }];\n}\n\nreturn [{\n  json: {\n    skip: false,\n    customer_message: msg.text.body,\n    customer_name: change.contacts?.[0]?.profile?.name || 'Customer',\n    phone_number: msg.from,\n    phone_number_id: change.metadata.phone_number_id,\n    message_id: msg.id\n  }\n}];"
+      },
+      "id": "wa-2",
+      "name": "Parse WhatsApp Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [420, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.skip }}",
+              "value2": false
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "wa-skip-check",
+      "name": "Is Text Order?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [640, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v18.0/{{ $json.phone_number_id }}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.WHATSAPP_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"messaging_product\": \"whatsapp\",\n  \"to\": \"{{ $json.phone_number }}\",\n  \"type\": \"text\",\n  \"text\": { \"body\": \"{{ $json.reply }}\" }\n}",
+        "options": {}
+      },
+      "id": "wa-send-hint",
+      "name": "Send Format Hint",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [860, 440]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8001/extract-order",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"message\": \"{{ $json.customer_message }}\"\n}",
+        "options": {}
+      },
+      "id": "wa-3",
+      "name": "Extract Order",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [860, 220]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8001/check-inventory",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ items: $json.items }) }}",
+        "options": {}
+      },
+      "id": "wa-4",
+      "name": "Check Inventory",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1080, 220]
+    },
+    {
+      "parameters": {
+        "jsCode": "const inventory = $json.inventory_results || [];\n\nlet total = 0;\nconst lines = [];\nlet canFulfill = true;\n\nfor (const item of inventory) {\n  const lineTotal = item.quantity * item.unit_price;\n  total += lineTotal;\n  lines.push({\n    product: item.product,\n    quantity: item.quantity,\n    unit_price: item.unit_price,\n    line_total: lineTotal,\n    available: item.available,\n    remaining_stock: item.remaining_stock,\n    reason: item.reason\n  });\n\n  if (!item.available) canFulfill = false;\n}\n\nconst invoiceNumber = `INV-${Date.now()}`;\n\nreturn [{\n  json: {\n    customer_name: $('Parse WhatsApp Message').first().json.customer_name,\n    phone_number: $('Parse WhatsApp Message').first().json.phone_number,\n    phone_number_id: $('Parse WhatsApp Message').first().json.phone_number_id,\n    original_message: $('Parse WhatsApp Message').first().json.customer_message,\n    invoice_number: invoiceNumber,\n    items: lines,\n    total_amount: total,\n    currency: 'KES',\n    can_fulfill: canFulfill,\n    status: canFulfill ? 'ready_for_payment' : 'out_of_stock'\n  }\n}];"
+      },
+      "id": "wa-5",
+      "name": "Build Invoice",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1300, 220]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.can_fulfill }}",
+              "value2": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "wa-6",
+      "name": "Can Fulfill?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1520, 220]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8001/process-payment",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"phone_number\": \"{{ $json.phone_number }}\",\n  \"amount\": {{ $json.total_amount }},\n  \"invoice_number\": \"{{ $json.invoice_number }}\"\n}",
+        "options": {}
+      },
+      "id": "wa-7",
+      "name": "Process Payment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1740, 140]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8001/fulfill-order",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"invoice_number\": \"{{ $('Build Invoice').first().json.invoice_number }}\",\n  \"items\": {{ JSON.stringify($('Build Invoice').first().json.items) }},\n  \"customer_name\": \"{{ $('Build Invoice').first().json.customer_name }}\"\n}",
+        "options": {}
+      },
+      "id": "wa-8",
+      "name": "Fulfill Order",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1960, 140]
+    },
+    {
+      "parameters": {
+        "jsCode": "const inv = $('Build Invoice').first().json;\nconst pay = $('Process Payment').first().json;\n\nconst itemLines = inv.items\n  .map(i => `  • ${i.product} x${i.quantity} = KES ${i.line_total}`)\n  .join('\\n');\n\nconst msg = [\n  `✅ *Order Confirmed!*`,\n  ``,\n  `👤 Customer: ${inv.customer_name}`,\n  `🧾 Invoice: ${inv.invoice_number}`,\n  ``,\n  `*Items:*`,\n  itemLines,\n  ``,\n  `💰 *Total: KES ${inv.total_amount}*`,\n  ``,\n  `📱 Payment: ${pay.status.toUpperCase()}`,\n  `🔖 Ref: ${pay.payment_reference}`,\n  ``,\n  `Thank you for your order! 🙏`\n].join('\\n');\n\nreturn [{ json: { message: msg, phone_number: inv.phone_number, phone_number_id: inv.phone_number_id } }];"
+      },
+      "id": "wa-build-success-msg",
+      "name": "Format Success Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2180, 140]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v18.0/{{ $json.phone_number_id }}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.WHATSAPP_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"messaging_product\": \"whatsapp\",\n  \"to\": \"{{ $json.phone_number }}\",\n  \"type\": \"text\",\n  \"text\": { \"body\": {{ JSON.stringify($json.message) }} }\n}",
+        "options": {}
+      },
+      "id": "wa-9",
+      "name": "Send Success Reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2400, 140]
+    },
+    {
+      "parameters": {
+        "jsCode": "const inv = $json;\n\nconst outOfStock = inv.items\n  .filter(i => !i.available)\n  .map(i => `  • ${i.product}: ${i.reason}`)\n  .join('\\n');\n\nconst msg = [\n  `❌ *Some items are unavailable*`,\n  ``,\n  `🧾 Invoice: ${inv.invoice_number}`,\n  ``,\n  `*Out of stock:*`,\n  outOfStock,\n  ``,\n  `Please update your order and try again.`\n].join('\\n');\n\nreturn [{ json: { message: msg, phone_number: inv.phone_number, phone_number_id: inv.phone_number_id } }];"
+      },
+      "id": "wa-build-oos-msg",
+      "name": "Format Out of Stock Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1740, 340]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v18.0/{{ $json.phone_number_id }}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.WHATSAPP_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"messaging_product\": \"whatsapp\",\n  \"to\": \"{{ $json.phone_number }}\",\n  \"type\": \"text\",\n  \"text\": { \"body\": {{ JSON.stringify($json.message) }} }\n}",
+        "options": {}
+      },
+      "id": "wa-10",
+      "name": "Send Out of Stock Reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1960, 340]
+    }
+  ],
+  "connections": {
+    "WhatsApp Verify": {
+      "main": [[{ "node": "Return Challenge", "type": "main", "index": 0 }]]
+    },
+    "WhatsApp Incoming": {
+      "main": [[{ "node": "Parse WhatsApp Message", "type": "main", "index": 0 }]]
+    },
+    "Parse WhatsApp Message": {
+      "main": [[{ "node": "Is Text Order?", "type": "main", "index": 0 }]]
+    },
+    "Is Text Order?": {
+      "main": [
+        [{ "node": "Extract Order", "type": "main", "index": 0 }],
+        [{ "node": "Send Format Hint", "type": "main", "index": 0 }]
+      ]
+    },
+    "Extract Order": {
+      "main": [[{ "node": "Check Inventory", "type": "main", "index": 0 }]]
+    },
+    "Check Inventory": {
+      "main": [[{ "node": "Build Invoice", "type": "main", "index": 0 }]]
+    },
+    "Build Invoice": {
+      "main": [[{ "node": "Can Fulfill?", "type": "main", "index": 0 }]]
+    },
+    "Can Fulfill?": {
+      "main": [
+        [{ "node": "Process Payment", "type": "main", "index": 0 }],
+        [{ "node": "Format Out of Stock Message", "type": "main", "index": 0 }]
+      ]
+    },
+    "Process Payment": {
+      "main": [[{ "node": "Fulfill Order", "type": "main", "index": 0 }]]
+    },
+    "Fulfill Order": {
+      "main": [[{ "node": "Format Success Message", "type": "main", "index": 0 }]]
+    },
+    "Format Success Message": {
+      "main": [[{ "node": "Send Success Reply", "type": "main", "index": 0 }]]
+    },
+    "Format Out of Stock Message": {
+      "main": [[{ "node": "Send Out of Stock Reply", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "ai-order-to-cash-whatsapp-v1"
+}

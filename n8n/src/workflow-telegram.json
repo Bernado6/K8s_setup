@@ -1,0 +1,239 @@
+{
+  "name": "AI Order-to-Cash - Telegram",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": ["message"],
+        "additionalFields": {}
+      },
+      "id": "tg-1",
+      "name": "Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.1,
+      "position": [200, 300],
+      "credentials": {
+        "telegramApi": {
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const msg = $json.message;\n\nif (!msg || !msg.text) {\n  return [];\n}\n\nconst firstName = msg.from?.first_name || '';\nconst lastName = msg.from?.last_name || '';\nconst fullName = `${firstName} ${lastName}`.trim() || 'Customer';\n\nreturn [{\n  json: {\n    customer_message: msg.text,\n    customer_name: fullName,\n    phone_number: String(msg.from?.id || '254700000000'),\n    chat_id: msg.chat.id\n  }\n}];"
+      },
+      "id": "tg-2",
+      "name": "Parse Telegram Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [420, 300]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "⏳ Processing your order, please wait...",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "tg-ack",
+      "name": "Send Acknowledgement",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [640, 300],
+      "credentials": {
+        "telegramApi": {
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8000/extract-order",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"message\": \"{{ $('Parse Telegram Message').first().json.customer_message }}\"\n}",
+        "options": {}
+      },
+      "id": "tg-3",
+      "name": "Extract Order",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [860, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8000/check-inventory",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ items: $json.items }) }}",
+        "options": {}
+      },
+      "id": "tg-4",
+      "name": "Check Inventory",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1080, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const inventory = $json.inventory_results || [];\n\nlet total = 0;\nconst lines = [];\nlet canFulfill = true;\n\nfor (const item of inventory) {\n  const lineTotal = item.quantity * item.unit_price;\n  total += lineTotal;\n  lines.push({\n    product: item.product,\n    quantity: item.quantity,\n    unit_price: item.unit_price,\n    line_total: lineTotal,\n    available: item.available,\n    remaining_stock: item.remaining_stock,\n    reason: item.reason\n  });\n  if (!item.available) canFulfill = false;\n}\n\nconst invoiceNumber = `INV-${Date.now()}`;\n\nreturn [{\n  json: {\n    customer_name: $('Parse Telegram Message').first().json.customer_name,\n    phone_number: $('Parse Telegram Message').first().json.phone_number,\n    chat_id: $('Parse Telegram Message').first().json.chat_id,\n    original_message: $('Parse Telegram Message').first().json.customer_message,\n    invoice_number: invoiceNumber,\n    items: lines,\n    total_amount: total,\n    currency: 'KES',\n    can_fulfill: canFulfill\n  }\n}];"
+      },
+      "id": "tg-5",
+      "name": "Build Invoice",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1300, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.can_fulfill }}",
+              "value2": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "tg-6",
+      "name": "Can Fulfill?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1520, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8000/process-payment",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"phone_number\": \"{{ $json.phone_number }}\",\n  \"amount\": {{ $json.total_amount }},\n  \"invoice_number\": \"{{ $json.invoice_number }}\"\n}",
+        "options": {}
+      },
+      "id": "tg-7",
+      "name": "Process Payment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1740, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8000/fulfill-order",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"invoice_number\": \"{{ $('Build Invoice').first().json.invoice_number }}\",\n  \"items\": {{ JSON.stringify($('Build Invoice').first().json.items) }},\n  \"customer_name\": \"{{ $('Build Invoice').first().json.customer_name }}\"\n}",
+        "options": {}
+      },
+      "id": "tg-8",
+      "name": "Fulfill Order",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1960, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "const inv = $('Build Invoice').first().json;\nconst pay = $('Process Payment').first().json;\n\nconst itemLines = inv.items\n  .map(i => `  • ${i.product} x${i.quantity} @ KES ${i.unit_price} = *KES ${i.line_total}*`)\n  .join('\\n');\n\nconst text = [\n  `✅ *Order Confirmed!*`,\n  ``,\n  `👤 *Customer:* ${inv.customer_name}`,\n  `🧾 *Invoice:* ${inv.invoice_number}`,\n  ``,\n  `*Order Items:*`,\n  itemLines,\n  ``,\n  `💰 *Total: KES ${inv.total_amount}*`,\n  ``,\n  `📱 *Payment:* ${pay.status.toUpperCase()}`,\n  `🔖 *Ref:* ${pay.payment_reference}`,\n  ``,\n  `_Thank you for your order! We will deliver shortly._ 🙏`\n].join('\\n');\n\nreturn [{ json: { text, chat_id: inv.chat_id } }];"
+      },
+      "id": "tg-fmt-success",
+      "name": "Format Success Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2180, 200]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "tg-9",
+      "name": "Send Success Reply",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [2400, 200],
+      "credentials": {
+        "telegramApi": {
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const inv = $json;\n\nconst outLines = inv.items\n  .filter(i => !i.available)\n  .map(i => `  • *${i.product}*: ${i.reason}`)\n  .join('\\n');\n\nconst availLines = inv.items\n  .filter(i => i.available)\n  .map(i => `  • ${i.product} x${i.quantity} = KES ${i.line_total}`)\n  .join('\\n');\n\nconst text = [\n  `❌ *Some items are out of stock*`,\n  ``,\n  `*Unavailable:*`,\n  outLines,\n  availLines ? `\\n*Available items:*\\n${availLines}` : '',\n  ``,\n  `Please update your order and try again.`\n].filter(Boolean).join('\\n');\n\nreturn [{ json: { text, chat_id: inv.chat_id } }];"
+      },
+      "id": "tg-fmt-oos",
+      "name": "Format Out of Stock Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1740, 420]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "tg-10",
+      "name": "Send Out of Stock Reply",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1960, 420],
+      "credentials": {
+        "telegramApi": {
+          "name": "Telegram Bot"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Telegram Trigger": {
+      "main": [[{ "node": "Parse Telegram Message", "type": "main", "index": 0 }]]
+    },
+    "Parse Telegram Message": {
+      "main": [[{ "node": "Send Acknowledgement", "type": "main", "index": 0 }]]
+    },
+    "Send Acknowledgement": {
+      "main": [[{ "node": "Extract Order", "type": "main", "index": 0 }]]
+    },
+    "Extract Order": {
+      "main": [[{ "node": "Check Inventory", "type": "main", "index": 0 }]]
+    },
+    "Check Inventory": {
+      "main": [[{ "node": "Build Invoice", "type": "main", "index": 0 }]]
+    },
+    "Build Invoice": {
+      "main": [[{ "node": "Can Fulfill?", "type": "main", "index": 0 }]]
+    },
+    "Can Fulfill?": {
+      "main": [
+        [{ "node": "Process Payment", "type": "main", "index": 0 }],
+        [{ "node": "Format Out of Stock Message", "type": "main", "index": 0 }]
+      ]
+    },
+    "Process Payment": {
+      "main": [[{ "node": "Fulfill Order", "type": "main", "index": 0 }]]
+    },
+    "Fulfill Order": {
+      "main": [[{ "node": "Format Success Message", "type": "main", "index": 0 }]]
+    },
+    "Format Success Message": {
+      "main": [[{ "node": "Send Success Reply", "type": "main", "index": 0 }]]
+    },
+    "Format Out of Stock Message": {
+      "main": [[{ "node": "Send Out of Stock Reply", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "ai-order-to-cash-telegram-v1"
+}

@@ -1,0 +1,291 @@
+{
+  "name": "AI Order-to-Cash Demo - Bedrock Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ai-order-demo",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "1",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "name": "customer_message",
+              "value": "={{ $json.body.message }}",
+              "type": "string"
+            },
+            {
+              "name": "customer_name",
+              "value": "={{ $json.body.customer_name || 'Walk-in Customer' }}",
+              "type": "string"
+            },
+            {
+              "name": "phone_number",
+              "value": "={{ $json.body.phone_number || '254700000000' }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "2",
+      "name": "Set Input",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        420,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://54.194.15.1:8001/extract-order",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"message\": \"{{ $json.customer_message }}\"\n}",
+        "options": {}
+      },
+      "id": "3",
+      "name": "Extract Order",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://54.194.15.1:8001/check-inventory",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ items: $json.items }) }}",
+        "options": {}
+      },
+      "id": "4",
+      "name": "Check Inventory",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        900,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const inventory = $json.inventory_results || [];\n\nlet total = 0;\nconst lines = [];\nlet canFulfill = true;\n\nfor (const item of inventory) {\n  const lineTotal = item.quantity * item.unit_price;\n  total += lineTotal;\n  lines.push({\n    product: item.product,\n    quantity: item.quantity,\n    unit_price: item.unit_price,\n    line_total: lineTotal,\n    available: item.available,\n    remaining_stock: item.remaining_stock,\n    reason: item.reason\n  });\n\n  if (!item.available) {\n    canFulfill = false;\n  }\n}\n\nconst invoiceNumber = `INV-${Date.now()}`;\n\nreturn [{\n  json: {\n    customer_name: $('Set Input').first().json.customer_name,\n    phone_number: $('Set Input').first().json.phone_number,\n    original_message: $('Set Input').first().json.customer_message,\n    invoice_number: invoiceNumber,\n    items: lines,\n    total_amount: total,\n    currency: 'KES',\n    can_fulfill: canFulfill,\n    status: canFulfill ? 'ready_for_payment' : 'out_of_stock'\n  }\n}];"
+      },
+      "id": "5",
+      "name": "Build Invoice",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1140,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.can_fulfill }}",
+              "value2": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "6",
+      "name": "Can Fulfill?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1360,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://54.194.15.1:8001/process-payment",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"phone_number\": \"{{ $json.phone_number }}\",\n  \"amount\": {{ $json.total_amount }},\n  \"invoice_number\": \"{{ $json.invoice_number }}\"\n}",
+        "options": {}
+      },
+      "id": "7",
+      "name": "Process Payment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1600,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://54.194.15.1:8001/fulfill-order",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"invoice_number\": \"{{ $('Build Invoice').first().json.invoice_number }}\",\n  \"items\": {{ JSON.stringify($('Build Invoice').first().json.items) }},\n  \"customer_name\": \"{{ $('Build Invoice').first().json.customer_name }}\"\n}",
+        "options": {}
+      },
+      "id": "8",
+      "name": "Fulfill Order",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1820,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": true,\n  \"message\": \"Order processed successfully\",\n  \"customer_name\": \"{{ $('Build Invoice').first().json.customer_name }}\",\n  \"original_message\": \"{{ $('Build Invoice').first().json.original_message }}\",\n  \"invoice_number\": \"{{ $('Build Invoice').first().json.invoice_number }}\",\n  \"total_amount\": {{ $('Build Invoice').first().json.total_amount }},\n  \"currency\": \"KES\",\n  \"payment_status\": \"{{ $('Process Payment').first().json.status }}\",\n  \"payment_reference\": \"{{ $('Process Payment').first().json.payment_reference }}\",\n  \"fulfillment_status\": \"{{ $('Fulfill Order').first().json.status }}\",\n  \"items\": {{ JSON.stringify($('Build Invoice').first().json.items) }}\n}",
+        "options": {}
+      },
+      "id": "9",
+      "name": "Success Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2040,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": false,\n  \"message\": \"Some items are out of stock\",\n  \"invoice_number\": \"{{ $json.invoice_number }}\",\n  \"items\": {{ JSON.stringify($json.items) }},\n  \"total_amount\": {{ $json.total_amount }},\n  \"currency\": \"KES\"\n}",
+        "options": {}
+      },
+      "id": "10",
+      "name": "Out of Stock Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1600,
+        420
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Set Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Input": {
+      "main": [
+        [
+          {
+            "node": "Extract Order",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Order": {
+      "main": [
+        [
+          {
+            "node": "Check Inventory",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Inventory": {
+      "main": [
+        [
+          {
+            "node": "Build Invoice",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Invoice": {
+      "main": [
+        [
+          {
+            "node": "Can Fulfill?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Can Fulfill?": {
+      "main": [
+        [
+          {
+            "node": "Process Payment",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Out of Stock Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Payment": {
+      "main": [
+        [
+          {
+            "node": "Fulfill Order",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fulfill Order": {
+      "main": [
+        [
+          {
+            "node": "Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "ai-order-to-cash-bedrock-v2"
+}
