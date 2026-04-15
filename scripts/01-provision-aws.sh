@@ -20,19 +20,24 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Config — override via env or flags
 # ---------------------------------------------------------------------------
-AWS_REGION="${AWS_REGION:-$(aws configure get region)}"
 KEY_NAME="k8s-keypair"
 KEY_PATH="$HOME/.ssh/${KEY_NAME}.pem"
 INSTANCE_TYPE="t3.medium"
 VOLUME_SIZE=30
 
-# Parse optional --region flag
+# Region must be provided via --region flag or AWS_REGION env var
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --region) AWS_REGION="$2"; shift 2 ;;
     *) echo "Unknown arg: $1"; exit 1 ;;
   esac
 done
+
+if [[ -z "${AWS_REGION:-}" ]]; then
+  echo "ERROR: Region is required."
+  echo "  Usage: bash 01-provision-aws.sh --region eu-west-1"
+  exit 1
+fi
 
 export AWS_DEFAULT_REGION="$AWS_REGION"
 
