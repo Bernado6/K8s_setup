@@ -13,7 +13,7 @@ module "ec2_instance" {
   source = "../modules/ec2"
 
   instance_name  = "k8s-node"
-  ami_id         = "ami-00c257e12d6828491"
+  ami_id         = "ami-089163e15e0d3fed1"
   instance_type  = "t2.medium"
   vpc_id         = "vpc-035369def6854bbeb"
   subnet_ids     = data.aws_subnets.vpc_subnets.ids
