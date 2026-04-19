@@ -38,7 +38,7 @@ EOF
 sudo sysctl --system
 
 # Install required packages
-sudo dnf install -y ca-certificates gnupg2 yum-utils
+# sudo dnf install -y ca-certificates gnupg2 yum-utils
 
 # Install containerd Runtime via Docker's CentOS/RHEL repo
 sudo dnf install -y dnf-utils
