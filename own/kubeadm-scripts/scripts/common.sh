@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # Common setup for all servers (Control Plane and Nodes)
-# Converted for yum-based systems (RHEL, CentOS, Amazon Linux)
+# Converted for dnf-based systems (RHEL, CentOS, Amazon Linux)
 
 set -euxo pipefail
 
@@ -16,7 +16,7 @@ sudo swapoff -a
 # Keeps the swap off during reboot
 (crontab -l 2>/dev/null; echo "@reboot /sbin/swapoff -a") | crontab - || true
 
-sudo yum update -y
+sudo dnf update -y
 
 # Create the .conf file to load the modules at bootup
 cat <<EOF | sudo tee /etc/modules-load.d/k8s.conf
@@ -38,12 +38,12 @@ EOF
 sudo sysctl --system
 
 # Install required packages
-sudo yum install -y ca-certificates curl gnupg
+sudo dnf install -y ca-certificates curl gnupg
 
 # Install containerd Runtime via Docker's CentOS/RHEL repo
-sudo yum install -y yum-utils
-sudo yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
-sudo yum install -y containerd.io
+sudo dnf install -y dnf-utils
+sudo dnf-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+sudo dnf install -y containerd.io
 
 sudo systemctl daemon-reload
 sudo systemctl enable containerd --now
@@ -87,8 +87,8 @@ EOF
 echo "crictl installed and configured successfully"
 
 # Install kubelet, kubectl, and kubeadm
-# Add Kubernetes yum repository
-cat <<EOF | sudo tee /etc/yum.repos.d/kubernetes.repo
+# Add Kubernetes dnf repository
+cat <<EOF | sudo tee /etc/dnf.repos.d/kubernetes.repo
 [kubernetes]
 name=Kubernetes
 baseurl=https://pkgs.k8s.io/core:/stable:/${KUBERNETES_VERSION}/rpm/
@@ -98,20 +98,20 @@ gpgkey=https://pkgs.k8s.io/core:/stable:/${KUBERNETES_VERSION}/rpm/repodata/repo
 exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni
 EOF
 
-sudo yum install -y \
+sudo dnf install -y \
   kubelet-"$KUBERNETES_INSTALL_VERSION" \
   kubectl-"$KUBERNETES_INSTALL_VERSION" \
   kubeadm-"$KUBERNETES_INSTALL_VERSION" \
   --disableexcludes=kubernetes
 
 # Prevent automatic updates for kubelet, kubeadm, and kubectl
-sudo yum install -y yum-plugin-versionlock
-sudo yum versionlock add kubelet kubeadm kubectl
+sudo dnf install -y dnf-plugin-versionlock
+sudo dnf versionlock add kubelet kubeadm kubectl
 
 sudo systemctl enable kubelet --now
 
 # Install jq, a command-line JSON processor
-sudo yum install -y jq
+sudo dnf install -y jq
 
 # Retrieve the local IP address of the eth1 interface and set it for kubelet
 local_ip="$(ip --json addr show eth1 | jq -r '.[0].addr_info[] | select(.family == "inet") | .local')"
