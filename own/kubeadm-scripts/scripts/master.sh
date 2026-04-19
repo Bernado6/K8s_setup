@@ -65,24 +65,32 @@ curl -O https://raw.githubusercontent.com/projectcalico/calico/v3.31.3/manifests
 sed -i "s|cidr: 192.168.0.0/16|cidr: $POD_CIDR|g" custom-resources.yaml
 kubectl apply -f custom-resources.yaml
 
-# Wait for FelixConfiguration CRD to be available before patching
-echo "Waiting for FelixConfiguration CRD..."
-until kubectl get crd felixconfigurations.crd.projectcalico.org &>/dev/null; do
+# Wait for calico-system namespace to be created by the operator
+echo "Waiting for calico-system namespace..."
+until kubectl get namespace calico-system &>/dev/null; do
+    echo "  calico-system not ready yet, retrying in 5s..."
     sleep 5
 done
 
-# Auto-detect the host network interface name for Felix MTU detection
+# Wait for FelixConfiguration to be created by the operator
+echo "Waiting for FelixConfiguration CRD..."
+until kubectl get felixconfiguration default &>/dev/null; do
+    echo "  FelixConfiguration not ready yet, retrying in 5s..."
+    sleep 5
+done
+
+# Auto-detect the host network interface
 HOST_IFACE=$(ip route get 1.1.1.1 | awk 'NR==1 {print $5}')
 echo "Detected host interface: $HOST_IFACE"
 
-# Patch Felix to use the correct interface pattern for MTU auto-detection
+# Patch Felix MTU interface pattern
 kubectl patch felixconfiguration default --type=merge --patch "{
   \"spec\": {
     \"mtuIfacePattern\": \"^($HOST_IFACE|eth.*|ens.*|enp.*|eno.*)\"
   }
-}" || echo "Warning: FelixConfiguration patch failed - may not exist yet, calico-node will still start"
+}"
 
-# Patch Calico Installation for correct IP autodetection interface
+# Patch Calico Installation for IP autodetection
 kubectl patch installation default --type=merge --patch "{
   \"spec\": {
     \"calicoNetwork\": {
@@ -92,6 +100,13 @@ kubectl patch installation default --type=merge --patch "{
     }
   }
 }"
+
+# Wait for calico-node daemonset to exist before checking rollout
+echo "Waiting for calico-node daemonset..."
+until kubectl get daemonset calico-node -n calico-system &>/dev/null; do
+    echo "  calico-node daemonset not ready yet, retrying in 5s..."
+    sleep 5
+done
 
 echo "Waiting for calico-node pods to be ready..."
 kubectl rollout status daemonset calico-node -n calico-system --timeout=300s

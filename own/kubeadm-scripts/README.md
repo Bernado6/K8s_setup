@@ -43,7 +43,13 @@ If you are learning Kubernetes, check out the [kubernetes Learning Roadmap](http
 
 
 sudo kubeadm reset -f
+sudo rm -rf /etc/cni/net.d
+sudo rm -rf $HOME/.kube
+sudo rm -rf /var/lib/calico
+sudo rm -rf /var/run/calico
 sudo rm -rf /etc/cni/net.d $HOME/.kube
+sudo kubeadm reset -f
+sudo rm -rf /etc/cni/net.d
 
 kubeadm join 10.0.2.185:6443 --token 3c5qb8.7l46v7i8jsoo2dz9 \
         --discovery-token-ca-cert-hash sha256:0f6ccebc9facaa97cc6ba6951c468f4683b318c8970c6a99b01a71cc7dce1356
