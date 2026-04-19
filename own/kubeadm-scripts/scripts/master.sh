@@ -57,24 +57,44 @@ sudo chown "$(id -u)":"$(id -g)" "$HOME"/.kube/config
 kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v3.31.3/manifests/operator-crds.yaml
 kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v3.31.3/manifests/tigera-operator.yaml
 
-sleep 120
+# Wait for Tigera operator to be ready before applying custom resources
+kubectl rollout status deployment tigera-operator -n tigera-operator --timeout=120s
 
-# Download custom resources
+# Download and apply custom resources with correct CIDR
 curl -O https://raw.githubusercontent.com/projectcalico/calico/v3.31.3/manifests/custom-resources.yaml
-
-# Get cluster CIDR from kube-controller-manager
-CLUSTER_CIDR=$(kubectl -n kube-system get pod -l component=kube-controller-manager -o yaml | grep -i cluster-cidr | awk '{print $2}' | sed 's/--cluster-cidr=//')
-
-if [ -z "$CLUSTER_CIDR" ]; then
-    echo "Warning: Could not detect cluster CIDR, using default $POD_CIDR"
-    CLUSTER_CIDR="$POD_CIDR"
-fi
-
-echo "Using cluster CIDR: $CLUSTER_CIDR"
-
-# Update CIDR in custom-resources.yaml
-sed -i "s|cidr: 192.168.0.0/16|cidr: $CLUSTER_CIDR|g" custom-resources.yaml
-
-# Apply custom resources
+sed -i "s|cidr: 192.168.0.0/16|cidr: $POD_CIDR|g" custom-resources.yaml
 kubectl apply -f custom-resources.yaml
-sleep 60
+
+# Wait for FelixConfiguration CRD to be available before patching
+echo "Waiting for FelixConfiguration CRD..."
+until kubectl get crd felixconfigurations.crd.projectcalico.org &>/dev/null; do
+    sleep 5
+done
+
+# Auto-detect the host network interface name for Felix MTU detection
+HOST_IFACE=$(ip route get 1.1.1.1 | awk 'NR==1 {print $5}')
+echo "Detected host interface: $HOST_IFACE"
+
+# Patch Felix to use the correct interface pattern for MTU auto-detection
+kubectl patch felixconfiguration default --type=merge --patch "{
+  \"spec\": {
+    \"mtuIfacePattern\": \"^($HOST_IFACE|eth.*|ens.*|enp.*|eno.*)\"
+  }
+}" || echo "Warning: FelixConfiguration patch failed - may not exist yet, calico-node will still start"
+
+# Patch Calico Installation for correct IP autodetection interface
+kubectl patch installation default --type=merge --patch "{
+  \"spec\": {
+    \"calicoNetwork\": {
+      \"nodeAddressAutodetectionV4\": {
+        \"interface\": \"$HOST_IFACE\"
+      }
+    }
+  }
+}"
+
+echo "Waiting for calico-node pods to be ready..."
+kubectl rollout status daemonset calico-node -n calico-system --timeout=300s
+
+echo "Calico installation complete."
+kubectl get pods -n calico-system

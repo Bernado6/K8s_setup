@@ -41,3 +41,18 @@ It includes illustrations, hands-on exercises, real-world examples, and dedicate
 
 If you are learning Kubernetes, check out the [kubernetes Learning Roadmap](https://github.com/techiescamp/kubernetes-learning-path)
 
+
+sudo kubeadm reset -f
+sudo rm -rf /etc/cni/net.d $HOME/.kube
+
+kubeadm join 10.0.2.185:6443 --token 3c5qb8.7l46v7i8jsoo2dz9 \
+        --discovery-token-ca-cert-hash sha256:0f6ccebc9facaa97cc6ba6951c468f4683b318c8970c6a99b01a71cc7dce1356
+
+kubectl get po -n kube-system
+kubectl get --raw='readyz?verbose?'
+kubeadm token create --print-join-command
+kubectl get nodes
+kubectl label node ip-10-0-3-152.eu-west-1.compute.internal node-role.kubernetes.io/worker=worker
+kubectl label node ip-10-0-3-152.eu-west-1.compute.internal node-role.kubernetes.io/worker=worker-node
+kubectl apply -f metrics-server.yaml
+
