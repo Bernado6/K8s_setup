@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # Common setup for all servers (Control Plane and Nodes)
-# Converted for dnf-based systems (RHEL, CentOS, Amazon Linux)
+# Converted for Amazon Linux 2023 (dnf-based)
 
 set -euxo pipefail
 
@@ -37,19 +37,12 @@ EOF
 # Apply sysctl params without reboot
 sudo sysctl --system
 
-# Install required packages
-# sudo dnf install -y ca-certificates gnupg2 yum-utils
+# Install containerd
+# AL2023 ships curl-minimal, gnupg2-minimal, and ca-certificates by default
+# so we skip those to avoid conflicts and install containerd directly
+sudo dnf install -y containerd --allowerasing
 
-# Install containerd Runtime via Docker's CentOS/RHEL repo
-sudo dnf install -y dnf-utils
-sudo dnf-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
-sudo dnf install -y containerd.io
-
-sudo systemctl daemon-reload
-sudo systemctl enable containerd --now
-sudo systemctl start containerd.service
-
-echo "Containerd runtime installed successfully"
+sudo mkdir -p /etc/containerd
 
 # Generate the default containerd configuration
 sudo containerd config default | sudo tee /etc/containerd/config.toml
@@ -57,8 +50,15 @@ sudo containerd config default | sudo tee /etc/containerd/config.toml
 # Enable SystemdCgroup
 sudo sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' /etc/containerd/config.toml
 
-# Restart containerd to apply changes
+sudo systemctl daemon-reload
+sudo systemctl enable containerd --now
 sudo systemctl restart containerd
+
+# Verify containerd socket is available
+sudo systemctl is-active containerd
+ls -la /var/run/containerd/containerd.sock
+
+echo "Containerd runtime installed successfully"
 
 # Detect architecture for downloads (amd64 vs arm64)
 ARCH_RAW="$(uname -m)"
@@ -86,9 +86,8 @@ EOF
 
 echo "crictl installed and configured successfully"
 
-# Install kubelet, kubectl, and kubeadm
 # Add Kubernetes dnf repository
-cat <<EOF | sudo tee /etc/dnf.repos.d/kubernetes.repo
+cat <<EOF | sudo tee /etc/yum.repos.d/kubernetes.repo
 [kubernetes]
 name=Kubernetes
 baseurl=https://pkgs.k8s.io/core:/stable:/${KUBERNETES_VERSION}/rpm/
@@ -98,14 +97,17 @@ gpgkey=https://pkgs.k8s.io/core:/stable:/${KUBERNETES_VERSION}/rpm/repodata/repo
 exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni
 EOF
 
+sudo dnf makecache
+
+# Install kubelet, kubectl, and kubeadm
 sudo dnf install -y \
-  kubelet-"$KUBERNETES_INSTALL_VERSION" \
-  kubectl-"$KUBERNETES_INSTALL_VERSION" \
-  kubeadm-"$KUBERNETES_INSTALL_VERSION" \
+  kubelet-"${KUBERNETES_INSTALL_VERSION}" \
+  kubectl-"${KUBERNETES_INSTALL_VERSION}" \
+  kubeadm-"${KUBERNETES_INSTALL_VERSION}" \
   --disableexcludes=kubernetes
 
 # Prevent automatic updates for kubelet, kubeadm, and kubectl
-sudo dnf install -y dnf-plugin-versionlock
+sudo dnf install -y python3-dnf-plugin-versionlock
 sudo dnf versionlock add kubelet kubeadm kubectl
 
 sudo systemctl enable kubelet --now
@@ -120,3 +122,5 @@ local_ip="$(ip --json addr show eth1 | jq -r '.[0].addr_info[] | select(.family 
 cat > /etc/default/kubelet <<EOF
 KUBELET_EXTRA_ARGS=--node-ip=$local_ip
 EOF
+
+echo "Base setup complete"
